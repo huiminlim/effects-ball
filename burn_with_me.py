@@ -301,10 +301,89 @@ def create_body_burn_layer(frame_shape, body_center, throw_energy, frame_idx):
 
     burn = np.clip(burn.astype(np.float32) * min(1.0, 0.4 + 1.2 * throw_energy), 0, 255).astype(np.uint8)
     return burn
+def create_hell_corner_burn_layer(frame_shape, hell_energy, frame_idx):
+    h, w = frame_shape[:2]
+    layer = np.zeros((h, w, 3), dtype=np.uint8)
 
+    if hell_energy < 0.02:
+        return layer
 
-def composite_with_occlusion(frame, glow_layer, core_layer, hand_mask, palm_visibility, body_burn):
-    out = cv2.add(frame, body_burn)
+    corners = [
+        (0, 0),
+        (w - 1, 0),
+        (0, h - 1),
+        (w - 1, h - 1),
+    ]
+
+    base_radius = int(min(w, h) * (0.18 + 0.12 * hell_energy))
+
+    for ci, (cx, cy) in enumerate(corners):
+        pulse = 1.0 + 0.08 * math.sin(frame_idx * 0.17 + ci * 1.3)
+        r = int(base_radius * pulse)
+
+        cv2.circle(layer, (cx, cy), int(r * 1.35), OUTER_FIRE, -1, cv2.LINE_AA)
+        cv2.circle(layer, (cx, cy), int(r * 0.95), MID_FIRE, -1, cv2.LINE_AA)
+        cv2.circle(layer, (cx, cy), int(r * 0.58), INNER_FIRE, -1, cv2.LINE_AA)
+
+        flame_count = 14 + int(24 * hell_energy)
+        for _ in range(flame_count):
+            if cx == 0:
+                sx = random.randint(0, max(1, int(r * 0.9)))
+            else:
+                sx = random.randint(max(0, w - int(r * 0.9) - 1), w - 1)
+
+            if cy == 0:
+                sy = random.randint(0, max(1, int(r * 0.9)))
+            else:
+                sy = random.randint(max(0, h - int(r * 0.9) - 1), h - 1)
+
+            dir_to_center = np.array([w * 0.5 - sx, h * 0.5 - sy], dtype=np.float32)
+            dir_to_center = normalize(dir_to_center)
+
+            side = np.array([-dir_to_center[1], dir_to_center[0]], dtype=np.float32)
+
+            flame_len = random.uniform(25, 65 + 80 * hell_energy)
+            sway = random.uniform(-18, 18)
+
+            p1 = (sx, sy)
+            p2 = (
+                int(sx + dir_to_center[0] * flame_len * 0.45 + side[0] * sway * 0.4),
+                int(sy + dir_to_center[1] * flame_len * 0.45 + side[1] * sway * 0.4),
+            )
+            p3 = (
+                int(sx + dir_to_center[0] * flame_len + side[0] * sway),
+                int(sy + dir_to_center[1] * flame_len + side[1] * sway),
+            )
+
+            pts = np.array([p1, p2, p3], dtype=np.int32)
+            cv2.polylines(layer, [pts], False, OUTER_FIRE, thickness=6, lineType=cv2.LINE_AA)
+            cv2.polylines(layer, [pts], False, MID_FIRE, thickness=3, lineType=cv2.LINE_AA)
+
+    smoke = np.zeros_like(layer)
+    for _ in range(18 + int(30 * hell_energy)):
+        x = random.randint(0, w - 1)
+        y = random.randint(0, h - 1)
+
+        edge_dist = min(x, y, w - 1 - x, h - 1 - y)
+        max_edge_band = int(min(w, h) * 0.18)
+        if edge_dist > max_edge_band:
+            continue
+
+        rr = random.randint(18, 55)
+        cv2.circle(smoke, (x, y), rr, DARK_SMOKE, -1, cv2.LINE_AA)
+
+    smoke = cv2.GaussianBlur(smoke, (81, 81), 0)
+    layer = cv2.add(layer, smoke)
+
+    blur_small = cv2.GaussianBlur(layer, (41, 41), 0)
+    blur_large = cv2.GaussianBlur(layer, (101, 101), 0)
+    layer = cv2.addWeighted(blur_small, 0.9, blur_large, 0.7, 0)
+
+    layer = np.clip(layer.astype(np.float32) * (0.45 + 1.15 * hell_energy), 0, 255).astype(np.uint8)
+    return layer
+def composite_with_occlusion(frame, glow_layer, core_layer, hand_mask, palm_visibility, body_burn, hell_burn):
+    out = cv2.add(frame, hell_burn)
+    out = cv2.add(out, body_burn)
     out = cv2.add(out, glow_layer)
     out = cv2.add(out, core_layer)
 
@@ -314,12 +393,12 @@ def composite_with_occlusion(frame, glow_layer, core_layer, hand_mask, palm_visi
         mask3 = cv2.merge([hand_mask, hand_mask, hand_mask]).astype(np.float32) / 255.0
         suppress = 0.94 * occlusion_strength
         out = out.astype(np.float32)
-        base = (cv2.add(frame, body_burn)).astype(np.float32)
+        base = cv2.add(frame, hell_burn)
+        base = cv2.add(base, body_burn).astype(np.float32)
         out = out * (1.0 - suppress * mask3) + base * (suppress * mask3)
         out = np.clip(out, 0, 255).astype(np.uint8)
 
     return out
-
 
 # =========================
 # MediaPipe helpers
@@ -438,7 +517,10 @@ def main():
                 # approximate body center lower than frame center
                 body_center = np.array([width * 0.5, height * 0.62], dtype=np.float32)
                 body_burn = create_body_burn_layer(frame.shape, body_center, throw_energy, frame_idx)
-
+                
+                hell_energy = min(1.0, 0.25 + 0.95 * throw_energy)
+                hell_burn = create_hell_corner_burn_layer(frame.shape, hell_energy, frame_idx)
+                
                 output_frame = composite_with_occlusion(
                     frame,
                     glow_layer,
@@ -446,12 +528,17 @@ def main():
                     hand_mask,
                     smoothed_visibility,
                     body_burn,
+                    hell_burn,
                 )
             else:
                 throw_energy *= THROW_DECAY
                 body_center = np.array([width * 0.5, height * 0.62], dtype=np.float32)
                 body_burn = create_body_burn_layer(frame.shape, body_center, throw_energy, frame_idx)
-                output_frame = cv2.add(frame, body_burn)
+                hell_energy = min(1.0, 0.20 + 0.90 * throw_energy)
+                hell_burn = create_hell_corner_burn_layer(frame.shape, hell_energy, frame_idx)
+
+                output_frame = cv2.add(frame, hell_burn)
+                output_frame = cv2.add(output_frame, body_burn)
 
             writer.write(output_frame)
             frame_idx += 1
