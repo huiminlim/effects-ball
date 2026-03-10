@@ -3,6 +3,7 @@ import math
 import random
 import numpy as np
 import mediapipe as mp
+from pathlib import Path
 
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
@@ -11,9 +12,10 @@ from mediapipe.tasks.python import vision
 # =========================
 # Config
 # =========================
-INPUT_VIDEO = "input.mp4"
-OUTPUT_VIDEO = "output_firethrow.mp4"
-MODEL_PATH = "hand_landmarker.task"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+INPUT_VIDEO = str(PROJECT_ROOT / "media" / "input" / "input.mp4")
+OUTPUT_VIDEO = str(PROJECT_ROOT / "media" / "output" / "output_firethrow.mp4")
+MODEL_PATH = str(PROJECT_ROOT / "assets" / "models" / "hand_landmarker.task")
 
 MAX_NUM_HANDS = 1
 FIREBALL_RADIUS = 36
@@ -517,10 +519,10 @@ def main():
                 # approximate body center lower than frame center
                 body_center = np.array([width * 0.5, height * 0.62], dtype=np.float32)
                 body_burn = create_body_burn_layer(frame.shape, body_center, throw_energy, frame_idx)
-                
+
                 hell_energy = min(1.0, 0.25 + 0.95 * throw_energy)
                 hell_burn = create_hell_corner_burn_layer(frame.shape, hell_energy, frame_idx)
-                
+
                 output_frame = composite_with_occlusion(
                     frame,
                     glow_layer,
